@@ -5,6 +5,8 @@ the wire key differs; FastAPI serialises by alias, so the JSON keys stay exactly
 what the Java controllers emitted.
 """
 
+from datetime import datetime
+
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, computed_field
 
 # UserService.createUser: `if (user.getElo() == 0) user.setElo(800)`.
@@ -197,3 +199,50 @@ class ProblemResponse(BaseModel):
         if self.rating <= 1600:
             return "1400-1800"
         return "1800+"
+
+
+# ---------------------------------------------------------------------------
+# Users - lookup, leaderboards, profile update
+# ---------------------------------------------------------------------------
+
+
+class PublicUserResponse(BaseModel):
+    """The `User` entity as `/{username}`, `/id/{id}`, `/leaderboard` and
+    `PUT /{id}` returned it - minus the password.
+
+    Key names are Lombok's, not the field names: a `private boolean isGuest`
+    gets an `isGuest()` getter whose implicit Jackson name is `guest`, and the
+    private field itself is not auto-detected, so `guest` and `admin` are the
+    only spellings that ever went over the wire. `created_at` keeps its
+    underscore because the Java field is literally named `created_at`.
+
+    Dropping `encrypted_password` is the one intentional difference. Jackson
+    published the bcrypt hash on all four of these routes, one of which is
+    public; nothing reads it, so it is gone.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str | None = None
+    username: str | None = None
+    email: str | None = None
+    elo: int
+    is_guest: bool = Field(default=False, serialization_alias="guest")
+    is_admin: bool = Field(default=False, serialization_alias="admin")
+    created_at: datetime | None = None
+
+
+class DailyLeaderboardEntry(BaseModel):
+    username: str | None = None
+    solve_count: int = Field(serialization_alias="solveCount")
+
+
+class UpdateUserRequest(BaseModel):
+    """Java bound `Map<String, String>` and applied each value only when
+    non-null, so a body carrying just one of the two fields left the other
+    alone. Both optional here for the same reason.
+    """
+
+    name: str | None = None
+    email: str | None = None
