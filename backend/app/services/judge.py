@@ -20,7 +20,9 @@ from app.config import settings
 # service is the reason it exists at all.
 USER_AGENT = "code-arena-app"
 
-# RestTemplate's default, and a run can legitimately take a while under load.
+# Ours, not Java's: `new RestTemplate()` configures no timeouts at all, so a
+# hung Piston pinned a request thread indefinitely. Piston caps a run itself
+# (3s CPU by default), which this sits well clear of.
 TIMEOUT_SECONDS = 30.0
 
 

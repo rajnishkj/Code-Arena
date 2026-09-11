@@ -101,7 +101,8 @@ class TestCaseRequest(BaseModel):
 class ProblemRequest(BaseModel):
     """Every field is optional here because Jackson's binding was: a missing key
     left the field null (or 0 for the two primitives), and only the *later*
-    Bean Validation pass rejected it. `validate_problem` below is that pass.
+    Bean Validation pass rejected it. That pass lives in `routers/problems.py`,
+    which is where the rejection turns into a 400.
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -117,37 +118,6 @@ class ProblemRequest(BaseModel):
     test_cases: list[TestCaseRequest] | None = Field(
         default=None, validation_alias="testCases"
     )
-
-
-# Field order is the declaration order of the @NotBlank/@NotNull annotations on
-# the Java entity, and it is load-bearing: Java reported only the *first* field
-# error and `problems.md` pins the body `{"description": "..."}` to
-# "title: Title is required". Spring's own ordering was incidental; fixing it
-# here makes that documented example reproducible.
-_PROBLEM_REQUIRED_TEXT: tuple[tuple[str, str, str], ...] = (
-    ("title", "title", "Title is required"),
-    ("description", "description", "Description is required"),
-    ("input_format", "inputFormat", "Input format is required"),
-    ("output_format", "outputFormat", "Output format is required"),
-    ("difficulty", "difficulty", "Difficulty is required"),
-)
-
-
-def validate_problem(payload: "ProblemRequest") -> str | None:
-    """The `field: message` string for the first violation, or None if valid.
-
-    `rating` is checked for presence, which the Java annotation could not do:
-    `@NotNull` on a primitive `int` can never fail, so a body omitting `rating`
-    silently became rating 0 and a problem nothing could match on Elo. The
-    ticket asks for the check the annotation was reaching for.
-    """
-    for attr, json_key, message in _PROBLEM_REQUIRED_TEXT:
-        value = getattr(payload, attr)
-        if value is None or not value.strip():
-            return f"{json_key}: {message}"
-    if payload.rating is None:
-        return "rating: Rating is required"
-    return None
 
 
 class TestCaseResponse(BaseModel):

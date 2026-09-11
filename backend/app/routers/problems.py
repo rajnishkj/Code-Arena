@@ -16,12 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Problem, TestCase
-from app.schemas import (
-    ProblemRequest,
-    ProblemResponse,
-    TestCaseRequest,
-    validate_problem,
-)
+from app.schemas import ProblemRequest, ProblemResponse
 from app.security import get_current_user_id, require_admin
 
 router = APIRouter(prefix="/api/problems", tags=["problems"])
@@ -29,11 +24,33 @@ router = APIRouter(prefix="/api/problems", tags=["problems"])
 # ProblemService.getProblemsByEloRange: abs(rating - elo) <= 200.
 ELO_BAND = 200
 
+# The Bean Validation pass the Java entity's @NotBlank annotations stood for,
+# in their declaration order. That order is load-bearing: Java reported only the
+# *first* field error, and `problems.md` pins the body {"description": ...} to
+# "title: Title is required". Spring's own ordering was incidental; fixing it
+# here is what makes that documented example reproducible.
+_REQUIRED_TEXT: tuple[tuple[str, str, str], ...] = (
+    ("title", "title", "Title is required"),
+    ("description", "description", "Description is required"),
+    ("input_format", "inputFormat", "Input format is required"),
+    ("output_format", "outputFormat", "Output format is required"),
+    ("difficulty", "difficulty", "Difficulty is required"),
+)
 
-def _validated(payload: ProblemRequest) -> ProblemRequest:
-    message = validate_problem(payload)
-    if message is not None:
-        raise HTTPException(status_code=400, detail=message)
+
+def _reject_if_invalid(payload: ProblemRequest) -> ProblemRequest:
+    """Raise 400 `{"error": "field: message"}` on the first violation.
+
+    `rating` is checked for presence, which the Java annotation could not do:
+    @NotNull on a primitive `int` can never fail, so a body omitting `rating`
+    silently became a rating-0 problem that no Elo band could match.
+    """
+    for attr, json_key, message in _REQUIRED_TEXT:
+        value = getattr(payload, attr)
+        if value is None or not value.strip():
+            raise HTTPException(status_code=400, detail=f"{json_key}: {message}")
+    if payload.rating is None:
+        raise HTTPException(status_code=400, detail="rating: Rating is required")
     return payload
 
 
@@ -44,7 +61,7 @@ def _test_case_rows(payload: ProblemRequest) -> list[TestCase]:
     ]
 
 
-def _create(payload: ProblemRequest, db: Session) -> Problem:
+def _new_problem(payload: ProblemRequest, db: Session) -> Problem:
     problem = Problem(
         title=payload.title,
         description=payload.description,
@@ -66,7 +83,7 @@ def create_problem(
     db: Session = Depends(get_db),
     _admin: int = Depends(require_admin),
 ) -> Problem:
-    problem = _create(_validated(payload), db)
+    problem = _new_problem(_reject_if_invalid(payload), db)
     db.commit()
     db.refresh(problem)
     return problem
@@ -83,8 +100,8 @@ def create_problems(
     later one failed validation. One transaction is the better contract and the
     success shape is identical.
     """
-    validated = [_validated(p) for p in payloads]
-    created = [_create(p, db) for p in validated]
+    validated = [_reject_if_invalid(p) for p in payloads]
+    created = [_new_problem(p, db) for p in validated]
     db.commit()
     for problem in created:
         db.refresh(problem)
@@ -103,7 +120,7 @@ def update_problem(
     leaving them behind pointing at nothing, which is what made Java clear the
     collection and null each incoming id before re-adding.
     """
-    payload = _validated(payload)
+    payload = _reject_if_invalid(payload)
     problem = db.get(Problem, problem_id)
     if problem is None:
         raise HTTPException(status_code=404, detail="Problem not found")
@@ -117,12 +134,17 @@ def update_problem(
     problem.rating = payload.rating
     problem.avg_solving_time = payload.avg_solving_time
 
-    if payload.test_cases is not None:
-        problem.test_cases.clear()
-        # Flush the orphan deletes before the replacements are queued, so the
-        # two sets never collide on the way to the database.
-        db.flush()
-        problem.test_cases.extend(_test_case_rows(payload))
+    # Unconditional, which looks like a missing guard and is not. Java wrote
+    # `if (updated.getTestCases() != null)`, but `Problem.testCases` is field-
+    # initialised to `new ArrayList<>()`, so Jackson never handed it a null and
+    # the branch always fired. A body omitting `testCases` therefore *emptied*
+    # the collection. Faithful, and the plan is explicit that a real gap gets
+    # preserved and flagged rather than quietly tightened.
+    problem.test_cases.clear()
+    # Flush the orphan deletes before the replacements are queued, so the two
+    # sets never collide on the way to the database.
+    db.flush()
+    problem.test_cases.extend(_test_case_rows(payload))
 
     db.commit()
     db.refresh(problem)
