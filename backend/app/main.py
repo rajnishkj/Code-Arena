@@ -8,10 +8,11 @@ from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.database import Base, engine
+from app.database import Base, SessionLocal, engine
 from app.errors import register_exception_handlers
 from app.redis_client import ping_redis
-from app.routers import users, visits
+from app.routers import problems, users, visits
+from app.seed import seed_problems
 from app.ws import manager
 
 # Importing the models registers all six tables on Base.metadata, which is what
@@ -32,6 +33,11 @@ async def lifespan(app: FastAPI):
     ping_redis()
     logger.info("Redis connected at %s:%s", settings.redis_host, settings.redis_port)
 
+    # The seeder is the only source of problem data on the fresh database, and
+    # matchmaking has nothing to hand out until it has run.
+    with SessionLocal() as db:
+        seed_problems(db)
+
     # Synchronous service code pushes to sockets from threadpool workers, so
     # the manager needs a handle on this loop to hop back onto.
     manager.bind_loop(asyncio.get_running_loop())
@@ -50,6 +56,7 @@ app.add_middleware(
 
 register_exception_handlers(app)
 
+app.include_router(problems.router)
 app.include_router(users.router)
 app.include_router(visits.router)
 

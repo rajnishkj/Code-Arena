@@ -5,7 +5,7 @@ the wire key differs; FastAPI serialises by alias, so the JSON keys stay exactly
 what the Java controllers emitted.
 """
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, computed_field
 
 # UserService.createUser: `if (user.getElo() == 0) user.setElo(800)`.
 DEFAULT_ELO = 800
@@ -69,3 +69,131 @@ class MeResponse(BaseModel):
     # Java coalesced these two to "" rather than emitting null.
     name: str = ""
     email: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Problems
+# ---------------------------------------------------------------------------
+
+
+class TestCaseRequest(BaseModel):
+    """Jackson bound `TestCase` from two names at once, and both are in live use:
+    `problems.md` sends `isSample`, and the frontend reads `sample`. That is not
+    sloppiness in either consumer - it is the well-known Jackson quirk around a
+    boolean field called `isSample`. The field carries `@JsonProperty("isSample")`
+    while Lombok's `isSample()` getter introspects to the implicit name `sample`,
+    and because the two implicit names differ Jackson never links them into one
+    property. It publishes both. Accept both on the way in, emit both on the way
+    out (see `TestCaseResponse.sample`).
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    input: str | None = None
+    expected_output: str | None = Field(default=None, validation_alias="expectedOutput")
+    is_sample: bool = Field(
+        default=False, validation_alias=AliasChoices("isSample", "sample")
+    )
+
+
+class ProblemRequest(BaseModel):
+    """Every field is optional here because Jackson's binding was: a missing key
+    left the field null (or 0 for the two primitives), and only the *later*
+    Bean Validation pass rejected it. `validate_problem` below is that pass.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    title: str | None = None
+    description: str | None = None
+    input_format: str | None = Field(default=None, validation_alias="inputFormat")
+    output_format: str | None = Field(default=None, validation_alias="outputFormat")
+    constraints: str | None = None
+    difficulty: str | None = None
+    rating: int | None = None
+    avg_solving_time: int = Field(default=0, validation_alias="avgSolvingTime")
+    test_cases: list[TestCaseRequest] | None = Field(
+        default=None, validation_alias="testCases"
+    )
+
+
+# Field order is the declaration order of the @NotBlank/@NotNull annotations on
+# the Java entity, and it is load-bearing: Java reported only the *first* field
+# error and `problems.md` pins the body `{"description": "..."}` to
+# "title: Title is required". Spring's own ordering was incidental; fixing it
+# here makes that documented example reproducible.
+_PROBLEM_REQUIRED_TEXT: tuple[tuple[str, str, str], ...] = (
+    ("title", "title", "Title is required"),
+    ("description", "description", "Description is required"),
+    ("input_format", "inputFormat", "Input format is required"),
+    ("output_format", "outputFormat", "Output format is required"),
+    ("difficulty", "difficulty", "Difficulty is required"),
+)
+
+
+def validate_problem(payload: "ProblemRequest") -> str | None:
+    """The `field: message` string for the first violation, or None if valid.
+
+    `rating` is checked for presence, which the Java annotation could not do:
+    `@NotNull` on a primitive `int` can never fail, so a body omitting `rating`
+    silently became rating 0 and a problem nothing could match on Elo. The
+    ticket asks for the check the annotation was reaching for.
+    """
+    for attr, json_key, message in _PROBLEM_REQUIRED_TEXT:
+        value = getattr(payload, attr)
+        if value is None or not value.strip():
+            return f"{json_key}: {message}"
+    if payload.rating is None:
+        return "rating: Rating is required"
+    return None
+
+
+class TestCaseResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int | None = None
+    input: str | None = None
+    expected_output: str | None = Field(
+        default=None, serialization_alias="expectedOutput"
+    )
+    is_sample: bool = Field(default=False, serialization_alias="isSample")
+
+    @computed_field
+    @property
+    def sample(self) -> bool:
+        """The second of Jackson's two keys for one boolean - the one the
+        frontend actually filters on (`tc.sample`). See `TestCaseRequest`.
+        """
+        return self.is_sample
+
+
+class ProblemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str | None = None
+    description: str | None = None
+    input_format: str | None = Field(default=None, serialization_alias="inputFormat")
+    output_format: str | None = Field(default=None, serialization_alias="outputFormat")
+    constraints: str | None = None
+    difficulty: str | None = None
+    rating: int
+    avg_solving_time: int = Field(default=0, serialization_alias="avgSolvingTime")
+    test_cases: list[TestCaseResponse] = Field(
+        default_factory=list, serialization_alias="testCases"
+    )
+
+    @computed_field
+    @property
+    def eloRange(self) -> str:  # noqa: N802 - the wire key, not a Python name
+        """`Problem.getEloRange()` is a getter with no backing column, so Jackson
+        published it as a response key. Nothing in the frontend reads it today,
+        but it costs one property to keep the response shape whole.
+        """
+        if self.rating <= 900:
+            return "0-1000"
+        if self.rating <= 1300:
+            return "1000-1400"
+        if self.rating <= 1600:
+            return "1400-1800"
+        return "1800+"
