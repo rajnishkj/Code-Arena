@@ -48,7 +48,7 @@ async def _purge_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # The database is empty after the PC reset, so this genuinely creates the
-    # six tables rather than being the no-op the migration plan first assumed.
+    # six tables rather than being a no-op against an existing schema.
     Base.metadata.create_all(bind=engine)
     logger.info("Postgres connected; schema ensured for %d tables", len(Base.metadata.tables))
 

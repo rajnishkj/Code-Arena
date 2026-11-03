@@ -80,7 +80,7 @@ class MeResponse(BaseModel):
 
 class TestCaseRequest(BaseModel):
     """Jackson bound `TestCase` from two names at once, and both are in live use:
-    `problems.md` sends `isSample`, and the frontend reads `sample`. That is not
+    admin request bodies send `isSample`, and the frontend reads `sample`. That is not
     sloppiness in either consumer - it is the well-known Jackson quirk around a
     boolean field called `isSample`. The field carries `@JsonProperty("isSample")`
     while Lombok's `isSample()` getter introspects to the implicit name `sample`,

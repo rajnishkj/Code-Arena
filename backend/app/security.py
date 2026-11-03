@@ -8,8 +8,8 @@ over the raw UTF-8 bytes of the shared secret, `sub` carrying the user id as a
 bare user id - there is no role claim, and `require_admin` below checks the
 `users.is_admin` column instead, exactly as the Java app did.
 
-Hashing uses the `bcrypt` bindings directly rather than the `passlib` wrapper
-the migration plan named: passlib 1.7.4 (unmaintained since 2020) probes its
+Hashing uses the `bcrypt` bindings directly rather than the `passlib` wrapper:
+passlib 1.7.4 (unmaintained since 2020) probes its
 bcrypt backend with an over-length password on import, which bcrypt >= 4.1
 rejects outright, so `CryptContext(schemes=["bcrypt"])` raises before it can
 hash anything. Nothing is lost - there are no stored hashes to stay compatible

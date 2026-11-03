@@ -95,7 +95,7 @@ def me(
 
 @router.get("/leaderboard", response_model=list[PublicUserResponse])
 def leaderboard(db: Session = Depends(get_db)) -> list[User]:
-    """Public, matching the Java app rather than the migration plan's public list.
+    """Public, matching the Java app.
 
     `SecurityConfig` permits `/api/users/{username}`, and Spring's path matcher
     happily binds `leaderboard` to that `{username}` variable, so the route was

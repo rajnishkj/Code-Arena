@@ -2,8 +2,8 @@
 
 The Java seeder was a `CommandLineRunner` that returned early when the problems
 table was non-empty. On the destroyed database that guard never mattered; on the
-fresh one this is the *only* source of problem data, and ticket 09's matchmaking
-picks from it, so the five problems and their ten test cases each are reproduced
+fresh one this is the *only* source of problem data, and matchmaking picks
+from it, so the five problems and their ten test cases each are reproduced
 verbatim - titles, statements, ratings, inputs and expected outputs unchanged.
 
 The sample/hidden split is also verbatim: the first two cases of every problem

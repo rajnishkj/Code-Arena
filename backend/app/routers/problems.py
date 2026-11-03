@@ -5,7 +5,7 @@ the `users.is_admin` flag - there is no role claim in the token, so `require_adm
 pays for a user read on each call, exactly as the Java controller did when it
 called `userService.getUserById(auth.getPrincipal())` before every write.
 
-Note that `problems.md` section 9 calls the two GET routes public. It is wrong:
+The two GET routes need a token too, as they did in Java:
 `SecurityConfig` permits only `/api/users/login`, `/api/users/register`,
 `/api/users/{username}`, `/api/visits` and `/ws/**`, so everything under
 `/api/problems` fell through to `anyRequest().authenticated()`.
@@ -24,9 +24,9 @@ router = APIRouter(prefix="/api/problems", tags=["problems"])
 
 # The Bean Validation pass the Java entity's @NotBlank annotations stood for,
 # in their declaration order. That order is load-bearing: Java reported only the
-# *first* field error, and `problems.md` pins the body {"description": ...} to
+# *first* field error, so a body of just {"description": ...} must answer
 # "title: Title is required". Spring's own ordering was incidental; fixing it
-# here is what makes that documented example reproducible.
+# here is what makes that answer deterministic.
 _REQUIRED_TEXT: tuple[tuple[str, str, str], ...] = (
     ("title", "title", "Title is required"),
     ("description", "description", "Description is required"),
