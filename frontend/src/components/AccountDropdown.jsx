@@ -103,6 +103,7 @@ export default function AccountDropdown({ open, onClose }) {
     const [email, setEmail] = useState('');
     const [saving, setSaving] = useState(false);
     const [msg, setMsg] = useState('');
+    const [loadFailed, setLoadFailed] = useState(false);
 
     useEffect(() => { injectStyles(); }, []);
 
@@ -129,11 +130,15 @@ export default function AccountDropdown({ open, onClose }) {
     // Fetch user on open
     useEffect(() => {
         if (!userId || !open) return;
+        setLoadFailed(false);
         API.get('/users/me').then(res => {
             setUser(res.data);
             setName(res.data.name || '');
             setEmail(res.data.email || '');
-        }).catch(() => setUser(null));
+        }).catch(() => {
+            setUser(null);
+            setLoadFailed(true);
+        });
     }, [userId, open]);
 
     const handleSave = async () => {
@@ -188,6 +193,14 @@ export default function AccountDropdown({ open, onClose }) {
                     <button className="acct-save" onClick={handleSave} disabled={saving}>
                         {saving ? 'Saving…' : 'Save'}
                     </button>
+                    <div className="acct-divider" />
+                    <button className="acct-item" onClick={handleLogout} style={{ color: '#ff6b6b' }}>Logout</button>
+                </>
+            ) : loadFailed ? (
+                <>
+                    <div style={{ padding: '8px 12px', color: 'rgba(255,255,255,0.4)', fontFamily: 'Inter, sans-serif', fontSize: 12 }}>
+                        Couldn't load your account.
+                    </div>
                     <div className="acct-divider" />
                     <button className="acct-item" onClick={handleLogout} style={{ color: '#ff6b6b' }}>Logout</button>
                 </>

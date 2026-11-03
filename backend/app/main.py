@@ -2,16 +2,18 @@
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.database import Base, engine
+from app.database import Base, SessionLocal, engine
 from app.errors import register_exception_handlers
 from app.redis_client import ping_redis
-from app.routers import users, visits
+from app.routers import judge, matches, matchmaking, problems, users, visits
+from app.seed import seed_problems
+from app.services.matches import purge_stale_matches
 from app.ws import manager
 
 # Importing the models registers all six tables on Base.metadata, which is what
@@ -21,22 +23,52 @@ from app import models  # noqa: F401
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("arena")
 
+PURGE_INTERVAL_S = 60
+
+
+def _purge_once() -> None:
+    with SessionLocal() as db:
+        purge_stale_matches(db)
+
+
+async def _purge_loop() -> None:
+    """Java's `@Scheduled(fixedRate = 60_000)`, except the first sweep waits a
+    full interval: after a restart, players still in a match need a beat or
+    two to land before the sweep judges them silent.
+    """
+    while True:
+        await asyncio.sleep(PURGE_INTERVAL_S)
+        try:
+            await asyncio.to_thread(_purge_once)
+        except Exception:
+            # One failed sweep must not end the loop for the life of the process.
+            logger.exception("Stale match purge failed")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # The database is empty after the PC reset, so this genuinely creates the
-    # six tables rather than being the no-op the migration plan first assumed.
+    # six tables rather than being a no-op against an existing schema.
     Base.metadata.create_all(bind=engine)
     logger.info("Postgres connected; schema ensured for %d tables", len(Base.metadata.tables))
 
     ping_redis()
     logger.info("Redis connected at %s:%s", settings.redis_host, settings.redis_port)
 
+    # The seeder is the only source of problem data on the fresh database, and
+    # matchmaking has nothing to hand out until it has run.
+    with SessionLocal() as db:
+        seed_problems(db)
+
     # Synchronous service code pushes to sockets from threadpool workers, so
     # the manager needs a handle on this loop to hop back onto.
     manager.bind_loop(asyncio.get_running_loop())
 
+    purge = asyncio.create_task(_purge_loop())
     yield
+    purge.cancel()
+    with suppress(asyncio.CancelledError):
+        await purge
 
 
 app = FastAPI(title="Arena API", lifespan=lifespan)
@@ -50,6 +82,10 @@ app.add_middleware(
 
 register_exception_handlers(app)
 
+app.include_router(judge.router)
+app.include_router(matches.router)
+app.include_router(matchmaking.router)
+app.include_router(problems.router)
 app.include_router(users.router)
 app.include_router(visits.router)
 

@@ -160,7 +160,7 @@ const Match = () => {
 
     const forfeitSent = useRef(false);
     const lostOpponent = useRef(false);
-    const matchEndReason = useRef('');
+    const [endReason, setEndReason] = useState('');
 
     useEffect(() => { injectStyles(); }, []);
 
@@ -212,9 +212,7 @@ const Match = () => {
                 const won = String(msg.winner) === String(userId);
                 setMatchWon(won);
                 setMatchOver(true);
-                if (!matchEndReason.current) {
-                    matchEndReason.current = won ? 'opponent_forfeit' : 'opponent_complete';
-                }
+                setEndReason(r => r || (won ? 'opponent_forfeit' : 'opponent_complete'));
             },
             onError: () => setConnectionLost(true),
             userId,
@@ -296,7 +294,7 @@ const Match = () => {
                     if (lostOpponent.current) {
                         if (forfeitSent.current) return;
                         forfeitSent.current = true;
-                        matchEndReason.current = 'disconnect_win';
+                        setEndReason('disconnect_win');
                         await API.post('/matches/complete', null, { params: { matchId } });
                         endMatch(true);
                     } else {
@@ -313,13 +311,13 @@ const Match = () => {
     const doForfeit = async () => {
         if (forfeitSent.current || matchOver) return;
         forfeitSent.current = true;
-        matchEndReason.current = 'forfeit';
+        setEndReason('forfeit');
         try {
             await API.post('/matches/forfeit', null, { params: { matchId } });
             endMatch(false);
         } catch {
             forfeitSent.current = false;
-            matchEndReason.current = '';
+            setEndReason('');
             addToast('Forfeit request failed — try again');
         }
     };
@@ -438,7 +436,7 @@ const Match = () => {
             setActiveTab('output');
 
             if (passed === total) {
-                matchEndReason.current = 'submit';
+                setEndReason(r => r || 'submit');
                 const res = await API.post('/matches/complete', null, {
                     params: { matchId }
                 });
@@ -447,7 +445,7 @@ const Match = () => {
             }
         } catch (err) {
             if (err.response?.status === 409) {
-                matchEndReason.current = 'opponent_faster';
+                setEndReason('opponent_faster');
                 endMatch(false);
                 return;
             }
@@ -462,7 +460,7 @@ const Match = () => {
     if (!matchId || !userId) return <Navigate to="/lobby" replace />;
 
     const getMatchOverTitle = () => {
-        switch (matchEndReason.current) {
+        switch (endReason) {
             case 'submit': return 'Victory!';
             case 'forfeit': return 'You forfeited';
             case 'disconnect_win': return 'You Win';
@@ -474,7 +472,7 @@ const Match = () => {
     };
 
     const getMatchOverSubtitle = () => {
-        switch (matchEndReason.current) {
+        switch (endReason) {
             case 'submit': return 'All test cases passed';
             case 'disconnect_win': return 'Opponent disconnected';
             case 'opponent_forfeit': return '';

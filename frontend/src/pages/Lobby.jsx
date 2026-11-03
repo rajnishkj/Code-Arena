@@ -10,6 +10,9 @@ import createWebSocketClient from '../services/websocket';
 const HLS_STREAM_URL =
     'https://stream.mux.com/tLkHO1qZoaaQOUeVWo8hEBeGQfySP02EPS02BmnNFyXys.m3u8';
 
+// Matches the backend queue TTL (TTL_MS in services/matchmaking.py).
+const SEARCH_SECONDS = 60;
+
 const STYLES = `
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=Instrument+Serif:ital@0;1&display=swap');
 
@@ -167,6 +170,27 @@ export default function Lobby() {
     const [status, setStatus] = useState('');
     const [searching, setSearching] = useState(false);
     const [joinErr, setJoinErr] = useState('');
+    const [deadline, setDeadline] = useState(null);
+    const [secondsLeft, setSecondsLeft] = useState(SEARCH_SECONDS);
+
+    // Search countdown. The backend drops queue entries after SEARCH_SECONDS,
+    // so searching past it would wait on a queue that no longer holds us.
+    useEffect(() => {
+        if (!searching || !deadline) return;
+        const tick = () => {
+            const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+            setSecondsLeft(left);
+            if (left > 0) return;
+            if (pollRef.current) clearInterval(pollRef.current);
+            API.post('/matchmaking/leave').catch(() => {});
+            setSearching(false);
+            setStatus('');
+            setJoinErr('No opponent found. Try again.');
+        };
+        tick();
+        const id = setInterval(tick, 250);
+        return () => clearInterval(id);
+    }, [searching, deadline]);
 
     // Styles
     useEffect(() => { injectStyles(); }, []);
@@ -295,6 +319,8 @@ export default function Lobby() {
     }, [searching]);
 
     const joinQueue = async () => {
+        setDeadline(Date.now() + SEARCH_SECONDS * 1000);
+        setSecondsLeft(SEARCH_SECONDS);
         setSearching(true);
         setStatus('Scanning for opponents...');
         setJoinErr('');
@@ -429,7 +455,9 @@ export default function Lobby() {
 
                         {/* Opponent */}
                         <div ref={oppRef} className={`lobby-panel ${searching ? 'searching' : 'opponent-idle'}`}>
-                            <div className="lobby-avatar opponent">{searching ? '⋯' : '?'}</div>
+                            <div className="lobby-avatar opponent" style={searching ? { color: '#5ed29c', fontVariantNumeric: 'tabular-nums' } : undefined}>
+                                {searching ? secondsLeft : '?'}
+                            </div>
                             <span style={{ fontFamily: 'Inter, sans-serif', fontSize: 15, fontWeight: 700, color: searching ? 'rgba(94,210,156,0.7)' : 'rgba(255,255,255,0.2)' }}>
                                 {searching ? 'Searching' : 'Opponent'}
                             </span>
