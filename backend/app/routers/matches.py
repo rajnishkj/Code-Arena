@@ -22,7 +22,7 @@ from app.ws import match_payload
 router = APIRouter(prefix="/api/matches", tags=["matches"])
 
 
-def _found(match: Match | None) -> dict[str, Any]:
+def _payload_or_404(match: Match | None) -> dict[str, Any]:
     # Java threw "Match not found" into its 500 handler; 404 is the honest code.
     if match is None:
         raise HTTPException(status_code=404, detail="Match not found")
@@ -49,7 +49,7 @@ def complete(
     """The caller wins. A second call returns the finished match as it stands,
     so a player who lost the race gets a 200 naming the opponent as winner.
     """
-    return _found(complete_match(db, match_id, user_id))
+    return _payload_or_404(complete_match(db, match_id, user_id))
 
 
 @router.post("/forfeit")
@@ -58,7 +58,7 @@ def forfeit(
     user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    return _found(forfeit_match(db, match_id, user_id))
+    return _payload_or_404(forfeit_match(db, match_id, user_id))
 
 
 @router.post("/heartbeat")

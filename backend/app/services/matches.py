@@ -111,18 +111,17 @@ def forfeit_match(db: Session, match_id: int, user_id: int) -> Match | None:
 
 def purge_stale_matches(db: Session) -> None:
     """Abandon unfinished matches whose players have both gone silent."""
+    # Evicted first so a sweep that fails partway still bounds the map.
+    heartbeat.forget_older_than(SILENCE_MS)
     unfinished = (
-        db.query(Match)
+        db.query(Match.id, Match.p1, Match.p2)
         .filter(Match.winner.is_(None))
         .order_by(Match.id)
         .limit(PURGE_BATCH)
         .all()
     )
-    for match in unfinished:
-        if heartbeat.is_alive(match.id, match.p1, SILENCE_MS):
+    for match_id, p1, p2 in unfinished:
+        if any(heartbeat.is_alive(match_id, p, SILENCE_MS) for p in (p1, p2)):
             continue
-        if heartbeat.is_alive(match.id, match.p2, SILENCE_MS):
-            continue
-        logger.info("Purging stale match %s", match.id)
-        complete_match(db, match.id, None)
-    heartbeat.forget_older_than(SILENCE_MS)
+        logger.info("Purging stale match %s", match_id)
+        complete_match(db, match_id, None)
