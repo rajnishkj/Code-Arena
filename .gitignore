@@ -2,15 +2,6 @@
 
 .vscode
 .idea
-improvement.md
-problems.md
-memory.md
-fastapi-migration-plan.md
-
-# Agent tooling — local only
-CLAUDE.md
-.scratch/
-docs/agents/
 
 # Migration — Java backend kept locally, new backend secrets
 legacy/
