@@ -11,7 +11,7 @@ from app.config import settings
 from app.database import Base, SessionLocal, engine
 from app.errors import register_exception_handlers
 from app.redis_client import ping_redis
-from app.routers import judge, problems, users, visits
+from app.routers import judge, matchmaking, problems, users, visits
 from app.seed import seed_problems
 from app.ws import manager
 
@@ -57,6 +57,7 @@ app.add_middleware(
 register_exception_handlers(app)
 
 app.include_router(judge.router)
+app.include_router(matchmaking.router)
 app.include_router(problems.router)
 app.include_router(users.router)
 app.include_router(visits.router)

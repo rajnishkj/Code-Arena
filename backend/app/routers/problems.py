@@ -18,11 +18,9 @@ from app.database import get_db
 from app.models import Problem, TestCase
 from app.schemas import ProblemRequest, ProblemResponse
 from app.security import get_current_user_id, require_admin
+from app.services.problems import problems_for_elo as problems_in_elo_band
 
 router = APIRouter(prefix="/api/problems", tags=["problems"])
-
-# ProblemService.getProblemsByEloRange: abs(rating - elo) <= 200.
-ELO_BAND = 200
 
 # The Bean Validation pass the Java entity's @NotBlank annotations stood for,
 # in their declaration order. That order is load-bearing: Java reported only the
@@ -157,16 +155,8 @@ def problems_for_elo(
     db: Session = Depends(get_db),
     _user_id: int = Depends(get_current_user_id),
 ) -> list[Problem]:
-    """Declared before `/{problem_id}` so the literal segment wins the match.
-
-    Filtered in SQL rather than Java's `findAll().stream().filter(...)`; the
-    band is the same and matchmaking calls this on every join.
-    """
-    return (
-        db.query(Problem)
-        .filter(Problem.rating.between(elo - ELO_BAND, elo + ELO_BAND))
-        .all()
-    )
+    """Declared before `/{problem_id}` so the literal segment wins the match."""
+    return problems_in_elo_band(db, elo)
 
 
 @router.get("/{problem_id}", response_model=ProblemResponse)
