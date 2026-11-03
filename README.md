@@ -10,43 +10,48 @@ Real-time 1v1 competitive coding platform. Face real opponents, solve problems u
 
 ## Overview
 
-Code Arena is a live-coding duel platform where two players receive the same problem and race to submit a correct solution. Built as a portfolio project for SDE fresher roles. Full-stack monorepo with Spring Boot backend, React frontend, PostgreSQL database, Redis matchmaking queue, and Piston code execution engine.
+Code Arena is a live-coding duel platform where two players receive the same problem and race to submit a correct solution. Built as a portfolio project for SDE fresher roles. Full-stack monorepo with a FastAPI backend, React frontend, PostgreSQL database, Redis matchmaking queue, and Piston code execution engine.
 
 ---
 
 ## Architecture
 
 ```
-Browser ──── HTTP ──── Spring Boot ──── PostgreSQL
-    │                    │    │
-    │              Redis │    └── Piston (Docker)
-    │                    │
-    └──── WS/STOMP ──────┘
+Browser ──── HTTP ──── FastAPI ──── PostgreSQL
+    │                   │   │
+    │             Redis │   └── Piston (Docker)
+    │                   │
+    └──── WebSocket ────┘
 ```
 
-- Frontend communicates via REST API + WebSocket (STOMP over SockJS)
-- Matchmaking queue lives in Redis sorted set
-- Code execution offloaded to Piston (Docker container, port 2000)
-- JWT auth on all guarded endpoints
+- The frontend calls the REST API under `http://localhost:8080/api` and opens one native WebSocket at `ws://localhost:8080/ws?userId=<id>`. The socket is push-only: the server sends `{"type": "match" | "match-result", "payload": <match>}` and ignores anything the browser sends.
+- The backend is one FastAPI process. Routers in `backend/app/routers/` handle HTTP, and services in `backend/app/services/` hold matchmaking, match completion, Elo, heartbeats, and the judge proxy.
+- SQLAlchemy creates the six tables on startup, and the seeder loads 5 problems with 10 test cases each when the `problems` table is empty.
+- The matchmaking queue is a Redis sorted set.
+- Code runs in Piston, a Docker container on port 2000. The backend proxies each run to it.
+- Match heartbeats live in process memory, so the backend must run as a single worker.
+
+The Spring Boot backend this replaces is kept locally under `legacy/` and is not tracked in git. The routes and JSON shapes are unchanged, so the frontend's only changes are the WebSocket client and its dependency list. See [`backend/README.md`](backend/README.md) for the backend's layout and conventions.
 
 ---
 
 ## Tech Stack
-![Spring Boot](https://img.shields.io/badge/Spring_Boot-3.x-6DB33F?logo=spring-boot)
-![React](https://img.shields.io/badge/React-18-61DAFB?logo=react)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql)
-![Redis](https://img.shields.io/badge/Redis-3.x-DC382D?logo=redis)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi)
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql)
+![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker)
 
 | Layer | Technology |
 |---|---|
-| Backend | Spring Boot 3, Java 21, Maven, JPA/Hibernate |
-| Real-time | STOMP over WebSocket (SockJS) |
-| Auth | JWT (jjwt 0.12.6), BCrypt |
-| Database | PostgreSQL 16 |
-| Queue | Redis 3.x (sorted sets) |
-| Code Execution | Piston API (Docker, privileged mode) |
-| Frontend | React 18, React Router, Monaco Editor |
+| Backend | FastAPI, Python 3.11+, Uvicorn, SQLAlchemy 2 |
+| Real-time | Native WebSocket (FastAPI `/ws`, browser `WebSocket`) |
+| Auth | JWT (PyJWT, HS256), bcrypt |
+| Database | PostgreSQL 16 (psycopg 3) |
+| Queue | Redis 7 (sorted sets) |
+| Code Execution | Piston API (Docker, privileged mode), proxied with httpx |
+| Frontend | React 19, React Router, Monaco Editor |
 | Animations | GSAP, HLS.js (video backgrounds) |
 | UI | Lucide React icons, glassmorphism CSS |
 | Build | Create React App (react-scripts) |
@@ -75,9 +80,11 @@ Browser ──── HTTP ──── Spring Boot ──── PostgreSQL
 3. Match found → both players assigned same problem (selected by Elo range)
 4. Both see Monaco editor with problem statement and test cases
 5. Player writes code, can Run against sample cases or Submit against all cases
-6. First correct submission wins
-7. Elo updated (K=32), Solved-Problem recorded, result pushed via WebSocket
+6. First correct submission wins. A later `/complete` from the other player gets `409 {"error": "Match already finished"}`
+7. Elo updated (K=32), a solved-problem row written for each player, result pushed via WebSocket
 8. Both players redirected to result overlay
+
+If one player's tab dies, the other tab sees the opponent's heartbeat go stale and claims the win within about 10 seconds of the opponent's last heartbeat. If both players stay silent for 30 seconds, the next run of a background sweep marks the match abandoned (`winner = -1`) with no rating change. The sweep runs every 60 seconds, so this takes 30 to 90 seconds.
 
 ---
 
@@ -90,9 +97,11 @@ Piston is a Docker-based code execution engine running on port 2000.
 | Python | 3.12.0 |
 | JavaScript | 18.15.0 |
 | Java | 15.0.2 |
-| C++ | 14.2 |
-| Go | 1.19.4 |
+| C++ | 10.2.0 |
+| Go | 1.16.2 |
 | Rust | 1.68.2 |
+
+These are the versions `frontend/src/pages/Match.jsx` requests, so Piston must have exactly these runtimes installed. JavaScript and C++ install under the Piston package names `node` and `gcc`.
 
 **Run vs Submit:**
 - **Run** — executes against sample test cases only (`isSample=true`). No match completion.
@@ -102,8 +111,8 @@ Piston is a Docker-based code execution engine running on port 2000.
 
 ## Matchmaking Algorithm
 
-- Redis sorted set key: `matchmaking:queue`
-- Score: timestamp (millis)
+- Redis sorted set key: `matchmaking_queue`
+- Score: enqueue time (epoch millis)
 - On join: scan all entries for opponent within ±100 Elo
 - If no match found within 15s of opponent wait time → expand band to ±300
 - Skip opponents with active matches (DB check) or deleted/stale users
@@ -115,12 +124,13 @@ Piston is a Docker-based code execution engine running on port 2000.
 
 ## Authentication
 
-- JWT tokens with 24h expiry (jjwt 0.12.6)
-- Passwords hashed with BCrypt
-- Public endpoints: `/api/users/login`, `/api/users/register`, `/api/users/{username}`, `/ws/**`
-- All other endpoints require `Authorization: Bearer <token>`
-- User ID extracted from JWT principal in controllers
-- CORS configured for `localhost:3000`
+- JWT tokens (HS256) with 24h expiry. `sub` is the user id and a `username` claim rides along. There are no roles.
+- Passwords hashed with bcrypt
+- Public endpoints: `POST /api/users/login`, `POST /api/users/register`, `GET /api/users/{username}`, `GET /api/users/leaderboard`, `POST /api/visits`, `/ws`
+- All other endpoints require `Authorization: Bearer <token>`. A missing or invalid token gets `401`.
+- Admin is the `users.is_admin` flag, checked per request. A non-admin gets `403 {"error": "Admin access required"}`.
+- Errors always have the shape `{"error": "<message>"}`
+- CORS allows `http://localhost:3000` (set `CORS_ORIGINS` in `backend/.env` to change it)
 
 ---
 
@@ -132,8 +142,10 @@ Piston is a Docker-based code execution engine running on port 2000.
 | POST | `/api/users/register` | No | Register account |
 | POST | `/api/users/login` | No | Login, returns JWT |
 | GET | `/api/users/me` | Yes | Current user profile |
-| GET | `/api/users/leaderboard` | Yes | Elo-ranked user list |
-| PUT | `/api/users/{id}` | Yes | Update name/email |
+| GET | `/api/users/leaderboard` | No | Elo-ranked user list, guests excluded |
+| GET | `/api/users/leaderboard/daily` | Yes | Matches played since local midnight, per user |
+| GET | `/api/users/id/{id}` | Yes | User by id |
+| PUT | `/api/users/{id}` | Yes | Update name and email (own account only) |
 | GET | `/api/users/{username}` | No | Public profile lookup |
 
 ### Matchmaking
@@ -146,26 +158,30 @@ Piston is a Docker-based code execution engine running on port 2000.
 ### Match
 | Method | URL | Auth | Description |
 |--------|-----|------|-------------|
-| GET | `/api/matches/{id}` | Yes | Match details (opponent, status) |
-| POST | `/api/matches/complete` | Yes | Submit solution, end match |
-| POST | `/api/matches/forfeit` | Yes | Concede match |
-| POST | `/api/matches/heartbeat` | Yes | Ping server (2s interval) |
-| GET | `/api/matches/heartbeat/status` | Yes | Check opponent alive status |
+| POST | `/api/matches/create?p1&p2&problemId` | Yes | Create a match directly |
+| GET | `/api/matches/{id}` | Yes | Match details (players, problem) |
+| POST | `/api/matches/complete?matchId` | Players | Claim the win; `409` if someone else already won or the match was abandoned |
+| POST | `/api/matches/forfeit?matchId` | Players | Concede match |
+| POST | `/api/matches/heartbeat?matchId` | Players | Ping server (2s interval) |
+| GET | `/api/matches/heartbeat/status?matchId&opponentId` | Yes | Check opponent alive status |
 
-### Problems (Admin)
+"Players" means the caller must be `p1` or `p2`. Anyone else gets `404 {"error": "Match not found"}`.
+
+### Problems
 | Method | URL | Auth | Description |
 |--------|-----|------|-------------|
 | POST | `/api/problems/create` | Admin | Create problem |
 | PUT | `/api/problems/{id}` | Admin | Update problem |
 | POST | `/api/problems/bulk` | Admin | Bulk create problems |
-| GET | `/api/problems/{id}` | No | Public problem view |
-| GET | `/api/problems/for-elo/{rating}` | Yes | Problem matching by Elo |
+| GET | `/api/problems/{id}` | Yes | Problem with its test cases |
+| GET | `/api/problems/for-elo/{elo}` | Yes | Problems rated within 200 of `elo` |
 
 ### Code Execution
 | Method | URL | Auth | Description |
 |--------|-----|------|-------------|
-| POST | `/api/judge/run` | Yes | Run against sample cases |
-| POST | `/api/judge/submit` | Yes | Submit against all cases |
+| POST | `/api/judge/execute?language&version&stdin` | Yes | Run the raw request body as source; returns the output as plain text |
+
+The frontend runs and submits by calling `/api/judge/execute` once per test case: sample cases for **Run**, all cases for **Submit**.
 
 ### Visit Counter
 | Method | URL | Auth | Description |
@@ -176,64 +192,72 @@ Piston is a Docker-based code execution engine running on port 2000.
 
 ## Database Schema
 
+The backend creates these tables on startup (`backend/app/models.py`). Column names follow Hibernate's naming from the original Java entities, so `legacy/` still works against the same database. Every `id` is a `bigint` identity primary key. The only foreign key is `test_cases.problem_id`. The player and problem columns in `matches` and `solved_problems` are plain `bigint` values with no constraint.
+
 ### users
 | Column | Type | Notes |
 |--------|------|-------|
-| id | BIGSERIAL | PK |
-| username | VARCHAR(255) | Unique |
-| password | VARCHAR(255) | BCrypt hash |
-| name | VARCHAR(255) | Display name |
-| email | VARCHAR(255) | |
-| elo | INTEGER | Default 800 |
-| is_admin | BOOLEAN | Default false |
-| is_guest | BOOLEAN | Default false |
+| id | BIGINT | PK |
+| name | VARCHAR(255) | Display name, nullable |
+| username | VARCHAR(255) | Nullable. **Not unique**: registration does not stop duplicates |
+| email | VARCHAR(255) | Nullable, UNIQUE |
+| elo | INTEGER | NOT NULL. 800 unless the registration body sets `elo` |
+| encrypted_password | VARCHAR(255) | bcrypt hash |
+| is_guest | BOOLEAN | NOT NULL |
+| is_admin | BOOLEAN | NOT NULL, default false |
+| created_at | TIMESTAMP(6) | |
 
 ### problems
+
+The API rejects a problem with a blank `title`, `description`, `input_format`, `output_format`, or `difficulty`, or with no `rating`. The table itself lets the five text columns be NULL.
+
 | Column | Type | Notes |
 |--------|------|-------|
-| id | BIGSERIAL | PK |
-| title | VARCHAR(255) | |
-| description | TEXT | |
-| input_format | VARCHAR(255) | |
-| output_format | VARCHAR(255) | |
-| constraints | VARCHAR(255) | |
-| difficulty | VARCHAR(255) | EASY / MEDIUM / HARD |
-| rating | INTEGER | Elo reference |
-| avg_solving_time | INTEGER | |
+| id | BIGINT | PK |
+| title | VARCHAR(255) | Required by the API |
+| description | TEXT | Required by the API |
+| input_format | TEXT | Required by the API |
+| output_format | TEXT | Required by the API |
+| constraints | TEXT | |
+| difficulty | VARCHAR(255) | Required by the API. EASY, MEDIUM, or HARD by convention, not enforced |
+| rating | INTEGER | NOT NULL, required by the API. Elo reference |
+| avg_solving_time | INTEGER | NOT NULL |
 
 ### test_cases
 | Column | Type | Notes |
 |--------|------|-------|
-| id | BIGSERIAL | PK |
-| problem_id | BIGINT | FK → problems |
+| id | BIGINT | PK |
+| problem_id | BIGINT | FK → problems(id) |
 | input | TEXT | |
 | expected_output | TEXT | |
-| is_sample | BOOLEAN | Sample vs hidden |
+| is_sample | BOOLEAN | NOT NULL. Sample vs hidden |
 
 ### matches
 | Column | Type | Notes |
 |--------|------|-------|
-| id | BIGSERIAL | PK |
-| p1_id | BIGINT | FK → users |
-| p2_id | BIGINT | FK → users |
-| problem_id | BIGINT | FK → problems |
-| winner | BIGINT | FK → users or -1 (stale) |
-| p1_elo_change | INTEGER | |
-| p2_elo_change | INTEGER | |
+| id | BIGINT | PK |
+| p1 | BIGINT | User id, no FK |
+| p2 | BIGINT | User id, no FK |
+| problem_id | BIGINT | Problem id, no FK |
+| winner | BIGINT | NULL while in progress, `-1` when abandoned, else the winner's user id |
+| p1elo_change | INTEGER | NOT NULL |
+| p2elo_change | INTEGER | NOT NULL |
 
 ### solved_problems
 | Column | Type | Notes |
 |--------|------|-------|
-| id | BIGSERIAL | PK |
-| user_id | BIGINT | FK → users |
-| problem_id | BIGINT | FK → problems |
-| match_id | BIGINT | FK → matches |
+| id | BIGINT | PK |
+| user_id | BIGINT | User id, no FK |
+| problem_id | BIGINT | Problem id, no FK |
+| solved_at | TIMESTAMP(6) | |
 
-### visits
+A finished match writes one row for **each** player, winner or not. The daily leaderboard counts these rows, so it counts matches played rather than wins.
+
+### visit
 | Column | Type | Notes |
 |--------|------|-------|
-| id | BIGSERIAL | PK |
-| count | INTEGER | Single-row counter |
+| id | BIGINT | PK |
+| count | INTEGER | NOT NULL. Single-row counter |
 
 ---
 
@@ -241,11 +265,11 @@ Piston is a Docker-based code execution engine running on port 2000.
 
 ### Prerequisites
 
-- Java 21+
+- Python 3.11+
 - Node.js 18+
-- PostgreSQL 16+
-- Redis 3.x (Windows port or Linux)
-- Docker (for Piston)
+- Docker (for PostgreSQL, Redis, and Piston)
+
+No JDK is needed.
 
 ### Steps
 
@@ -254,34 +278,39 @@ Piston is a Docker-based code execution engine running on port 2000.
 git clone https://github.com/rajnishkj/code_arena
 cd code_arena
 
-# 2. Database setup
-psql -U postgres -c "CREATE DATABASE arena;"
-# Update arena/src/main/resources/application.properties with DB credentials
+# 2. PostgreSQL and Redis
+docker run -d --name arena-postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=arena \
+  -p 5432:5432 -v arena-pgdata:/var/lib/postgresql/data postgres:16
+docker run -d --name arena-redis -p 6379:6379 redis:7-alpine
 
-# 3. Redis
-# Windows: run redis-server.exe (3.0.504)
-# Linux: sudo service redis-server start
-
-# 4. Piston (Docker)
+# 3. Piston (Docker)
 docker run -d \
   --name piston \
   --restart unless-stopped \
   --privileged \
   --tmpfs /piston/jobs \
   -p 2000:2000 \
-  ghcr.io/piston-mn/piston:latest
+  ghcr.io/engineer-man/piston
+# Then install the runtimes listed under Code Execution, through Piston's
+# package API (POST /api/v2/packages), before running any code.
 
-# 5. Backend
-cd arena
-mvn spring-boot:run
+# 4. Backend
+cd backend
+python -m venv .venv
+.venv\Scripts\Activate.ps1       # Windows PowerShell; source .venv/bin/activate elsewhere
+pip install -r requirements.txt
+copy .env.example .env            # cp on macOS and Linux
+uvicorn app.main:app --host 0.0.0.0 --port 8080
 
-# 6. Frontend
-cd ../frontend
+# 5. Frontend (new terminal, from the repo root)
+cd frontend
 npm install
 npm start
 ```
 
 Open `http://localhost:3000`.
+
+`.env.example` holds working local defaults, so the copy needs no edits. On first start the backend creates the tables and seeds the five problems. Run it as a single worker: never pass `--workers`, because heartbeats live in process memory.
 
 ### Setting Admin Privileges
 
@@ -322,14 +351,20 @@ UPDATE users SET is_admin = true WHERE id = <your_user_id>;
 
 ## Development Notes
 
-### Redis 3.x ZPOPMIN
-`opsForZSet().popMin()` throws exception on Redis 3.0.504 — `ZPOPMIN` was added in Redis 5.0. Fixed with `range()` + `remove()` (non-atomic but acceptable for dev).
+### Single worker only
+Heartbeats are an in-process dictionary. With two Uvicorn workers, each worker sees only the beats it received, so a live opponent reads as disconnected and the sweep abandons matches still in play.
 
 ### Piston Version Mismatch
 Hardcoded runtime versions must match Piston's installed runtimes. Check available versions via `GET /api/v2/runtimes` on the Piston container.
 
-### JWT CORS Preflight
-Spring Security must be configured with `.cors(cors -> {})` so preflight `OPTIONS` returns CORS headers before authentication is checked.
+### Matchmaking claims are atomic
+Two players joining at the same moment can both find the same waiting opponent. The `ZREM` that removes the opponent from the queue decides who gets them: a join whose `ZREM` removes nothing moves on to the next entry.
+
+### Match completion is serialised
+`/complete` locks the match row (`SELECT ... FOR UPDATE`), so a submit that races the opponent's disconnect auto-complete applies Elo once. The loser of the race gets `409`.
 
 ### Stale Match Purge
-Scheduled task runs every 60s. Finds matches with `winner IS NULL` and checks heartbeat tracker. Both players stale 30s+ → purged with `winner=-1`, no Elo change, no WebSocket notification.
+A background task runs every 60s, starting one interval after startup. It finds matches with `winner IS NULL` and checks the heartbeat tracker. Both players stale 30s+ → purged with `winner=-1`, no Elo change, no WebSocket notification.
+
+### Expired tokens get 401
+A missing or expired token gets `401`, but `frontend/src/services/api.js` logs the user out only on `403`. The Spring backend answered `403`, so an expired session now stays on the page and its requests fail until the user logs in again.
