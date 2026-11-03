@@ -13,7 +13,9 @@ API.interceptors.request.use(config => {
 API.interceptors.response.use(
     res => res,
     err => {
-        if (err.response?.status === 403) {
+        const status = err.response?.status;
+        const staleSession = status === 401 && err.config?.url !== '/users/login';
+        if (status === 403 || staleSession) {
             localStorage.clear();
             window.location.href = '/login';
         }
