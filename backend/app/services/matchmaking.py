@@ -1,8 +1,6 @@
-"""The matchmaking queue, ported from MatchmakingService.java.
+"""Pairing players off the matchmaking queue, ported from MatchmakingService.java.
 
-The queue is a Redis sorted set of user ids scored by enqueue time in epoch
-milliseconds, so ascending score order is longest-waiting first and an entry's
-wait time is `now - score`.
+An entry's wait time is `now - score`; see `services/queue.py` for the set itself.
 """
 
 import logging
@@ -15,11 +13,11 @@ from app.models import User
 from app.redis_client import redis_client
 from app.services.matches import create_match, find_active_match
 from app.services.problems import problems_for_elo
+from app.services.queue import QUEUE
 from app.ws import push_match
 
 logger = logging.getLogger("arena")
 
-QUEUE = "matchmaking_queue"
 TTL_MS = 60_000
 BROADEN_WAIT_MS = 15_000
 ELO_WINDOW = 100
@@ -29,10 +27,6 @@ FALLBACK_PROBLEM_ID = 1
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
-
-
-def remove_from_queue(user_id: int) -> None:
-    redis_client.zrem(QUEUE, str(user_id))
 
 
 def _pick_problem_id(db: Session, elo: int) -> int:

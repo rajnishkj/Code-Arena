@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.security import get_current_user_id
 from app.services.matches import find_active_match
-from app.services.matchmaking import join_and_match, remove_from_queue
+from app.services.matchmaking import join_and_match
+from app.services.queue import remove_from_queue
 from app.ws import match_payload
 
 router = APIRouter(prefix="/api/matchmaking", tags=["matchmaking"])

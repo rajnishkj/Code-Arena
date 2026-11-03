@@ -36,11 +36,15 @@ copy needs no edits for a local run.
 uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
-Run **a single worker**: the heartbeat tracker keeps its state in process, the
-same limitation the Java backend had.
+Run **a single worker** (no `--workers`, no gunicorn pool). Match heartbeats
+live in process memory, the same limitation the Java backend had. With two
+workers each sees only the beats it received, so a live opponent reads as
+disconnected and the stale-match sweep abandons matches still being played.
 
 On startup the app creates any missing tables, seeds the problem set when
-`problems` is empty, and verifies the Redis connection. Interactive API docs are
+`problems` is empty, and verifies the Redis connection. Every 60 seconds a
+background sweep marks a match abandoned (`winner = -1`) once both players have
+sent no heartbeat for 30 seconds. Interactive API docs are
 at <http://localhost:8080/docs>.
 
 ## Layout
@@ -55,6 +59,8 @@ at <http://localhost:8080/docs>.
 | `app/schemas.py` | request/response models, with the JSON keys the frontend reads |
 | `app/errors.py` | the `{"error": "<message>"}` contract |
 | `app/routers/` | one module per `/api` path prefix |
+| `app/services/` | matchmaking, match completion and Elo, heartbeats, the judge proxy |
+| `app/ws.py` | the `/ws` socket registry and its threadsafe push helpers |
 
 ## Conventions
 

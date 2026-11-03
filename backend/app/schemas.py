@@ -216,3 +216,14 @@ class UpdateUserRequest(BaseModel):
 
     name: str | None = None
     email: str | None = None
+
+
+class MatchDetailsResponse(BaseModel):
+    """MatchDetailsDTO. `Match.jsx` works out the opponent from `p1Id`/`p2Id`."""
+
+    match_id: int = Field(serialization_alias="matchId")
+    p1_id: int | None = Field(serialization_alias="p1Id")
+    p2_id: int | None = Field(serialization_alias="p2Id")
+    p1_username: str | None = Field(serialization_alias="p1Username")
+    p2_username: str | None = Field(serialization_alias="p2Username")
+    problem_id: int | None = Field(serialization_alias="problemId")
