@@ -1,9 +1,10 @@
 """Create, end and watch a match. Parameters are query strings, as the Java
 controller's `@RequestParam`s were.
 
-Every route takes a token, and none checks that the caller plays in the match:
-any user can complete, forfeit or beat for any match. That is Java's behaviour,
-ported as it stands.
+Every route takes a token. Completing, forfeiting and beating also require the
+caller to be one of the two players. Java never checked, so any user could win
+any match. A non-player gets the same 404 as a missing match, not a 403, because
+the frontend logs the user out on any 403.
 """
 
 from typing import Any
@@ -22,11 +23,20 @@ from app.ws import match_payload
 router = APIRouter(prefix="/api/matches", tags=["matches"])
 
 
-def _payload_or_404(match: Match | None) -> dict[str, Any]:
+def _not_found() -> HTTPException:
     # Java threw "Match not found" into its 500 handler; 404 is the honest code.
-    if match is None:
-        raise HTTPException(status_code=404, detail="Match not found")
-    return match_payload(match)
+    return HTTPException(status_code=404, detail="Match not found")
+
+
+def _played_match(
+    match_id: int = Query(alias="matchId"),
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> Match:
+    match = db.get(Match, match_id)
+    if match is None or user_id not in (match.p1, match.p2):
+        raise _not_found()
+    return match
 
 
 @router.post("/create")
@@ -42,31 +52,36 @@ def create(
 
 @router.post("/complete")
 def complete(
-    match_id: int = Query(alias="matchId"),
+    match: Match = Depends(_played_match),
     user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """The caller wins. A second call returns the finished match as it stands,
-    so a player who lost the race gets a 200 naming the opponent as winner.
+    """The caller wins, unless the match already ended another way: then 409,
+    which `Match.jsx` reads as "opponent was faster". Java answered 200 with the
+    finished match, and the page showed the late player a win screen. The winner
+    repeating the call still gets 200.
     """
-    return _payload_or_404(complete_match(db, match_id, user_id))
+    finished = complete_match(db, match.id, user_id)
+    if finished.winner != user_id:
+        raise HTTPException(status_code=409, detail="Match already finished")
+    return match_payload(finished)
 
 
 @router.post("/forfeit")
 def forfeit(
-    match_id: int = Query(alias="matchId"),
+    match: Match = Depends(_played_match),
     user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    return _payload_or_404(forfeit_match(db, match_id, user_id))
+    return match_payload(forfeit_match(db, match, user_id))
 
 
 @router.post("/heartbeat")
 def beat(
-    match_id: int = Query(alias="matchId"),
+    match: Match = Depends(_played_match),
     user_id: int = Depends(get_current_user_id),
 ) -> dict[str, bool]:
-    heartbeat.beat(match_id, user_id)
+    heartbeat.beat(match.id, user_id)
     return {"ok": True}
 
 
@@ -87,7 +102,7 @@ def details(
 ) -> MatchDetailsResponse:
     match = db.get(Match, match_id)
     if match is None:
-        raise HTTPException(status_code=404, detail="Match not found")
+        raise _not_found()
     return MatchDetailsResponse(
         match_id=match.id,
         p1_id=match.p1,

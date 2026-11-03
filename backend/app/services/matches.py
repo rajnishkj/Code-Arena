@@ -3,6 +3,7 @@
 import logging
 from datetime import datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Match, SolvedProblem, User
@@ -44,8 +45,8 @@ def find_active_match(db: Session, user_id: int) -> Match | None:
     )
 
 
-def complete_match(db: Session, match_id: int, winner: int | None) -> Match | None:
-    """End a match, or None if there is no such match.
+def complete_match(db: Session, match_id: int, winner: int | None) -> Match:
+    """End a match.
 
     With a winner, both ratings move, both players get a `solved_problems` row,
     and both are pushed the result. With `winner=None` the match is abandoned:
@@ -55,9 +56,12 @@ def complete_match(db: Session, match_id: int, winner: int | None) -> Match | No
     lock makes that check hold under concurrency, where Java's read-then-write
     let two simultaneous completions both apply Elo.
     """
-    match = db.get(Match, match_id, with_for_update=True, populate_existing=True)
-    if match is None:
-        return None
+    match = db.execute(
+        select(Match)
+        .where(Match.id == match_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
     if match.winner is not None:
         db.commit()
         return match
@@ -98,15 +102,10 @@ def complete_match(db: Session, match_id: int, winner: int | None) -> Match | No
     return match
 
 
-def forfeit_match(db: Session, match_id: int, user_id: int) -> Match | None:
-    """The opponent wins. Anyone other than p1 forfeiting hands p1 the win, as in
-    Java, which never checked the caller was in the match.
-    """
-    match = db.get(Match, match_id)
-    if match is None:
-        return None
+def forfeit_match(db: Session, match: Match, user_id: int) -> Match:
+    """The opponent of `user_id`, who must be one of the two players, wins."""
     opponent = match.p2 if match.p1 == user_id else match.p1
-    return complete_match(db, match_id, opponent)
+    return complete_match(db, match.id, opponent)
 
 
 def purge_stale_matches(db: Session) -> None:
